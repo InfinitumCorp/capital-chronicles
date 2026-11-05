@@ -3,41 +3,71 @@ const FEEDS = [
   'https://www.theguardian.com/world/rss',
   'https://rss.nytimes.com/services/xml/rss/nyt/World.xml',
   'https://www.aljazeera.com/xml/rss/all.xml',
-  'https://feeds.npr.org/1004/rss.xml'  // NPR World
+  'https://feeds.npr.org/1004/rss.xml'
 ];
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function safeUrl(value) {
+  try {
+    const url = new URL(String(value));
+    if (url.protocol === 'https:' || url.protocol === 'http:') return url.href;
+  } catch {
+    /* feed item had no usable URL */
+  }
+  return '';
+}
+
+function formatWhen(value, withTime) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return withTime ? date.toLocaleString() : date.toLocaleDateString();
+}
 
 async function fetchFeed(url) {
   try {
     const proxy = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(url)}`;
     const res = await fetch(proxy);
+    if (!res.ok) return [];
     const data = await res.json();
-    if (data.status === 'ok') {
-      return data.items.map(item => ({
-        title: item.title,
-        link: item.link,
-        description: item.description ? item.description.replace(/<[^>]*>/g, '').substring(0, 200) + '...' : '',
+    if (data.status !== 'ok' || !Array.isArray(data.items)) return [];
+    const source = data.feed?.title || 'Wire';
+    return data.items.map(item => {
+      const plain = String(item.description || '').replace(/<[^>]*>/g, '').slice(0, 200);
+      return {
+        title: item.title || 'Untitled',
+        link: safeUrl(item.link),
+        description: plain ? `${plain}...` : '',
         pubDate: item.pubDate,
-        thumbnail: item.enclosure?.link || item.thumbnail || null,
-        source: data.feed.title
-      }));
-    }
-  } catch (e) {
-    console.error('Feed error', url, e);
+        thumbnail: safeUrl(item.enclosure?.link || item.thumbnail),
+        source
+      };
+    });
+  } catch (error) {
+    console.error('Feed error', url, error);
+    return [];
   }
-  return [];
+}
+
+function storyLink(story, inner) {
+  if (!story.link) return inner;
+  return `<a href="${escapeHtml(story.link)}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
 }
 
 async function loadNews() {
   const container = document.getElementById('news-content');
+  if (!container) return;
   container.innerHTML = '<div class="loading">Loading latest international news...</div>';
 
-  const allItems = [];
-  for (const feed of FEEDS) {
-    const items = await fetchFeed(feed);
-    allItems.push(...items);
-  }
-
-  // Sort by date, take top 30
+  const batches = await Promise.all(FEEDS.map(fetchFeed));
+  const allItems = batches.flat();
   allItems.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
   const stories = allItems.slice(0, 30);
 
@@ -46,41 +76,41 @@ async function loadNews() {
     return;
   }
 
-  // Lead story
   const lead = stories[0];
   const secondary = stories.slice(1, 5);
   const grid = stories.slice(5, 20);
+  const leadImage = lead.thumbnail
+    ? `<img src="${escapeHtml(lead.thumbnail)}" alt="" class="lead-image">`
+    : '';
 
-  let html = `
-    <div class="lead-section">
+  container.innerHTML = `
+    <div class="lead-section" id="top">
       <div class="lead-story">
-        ${lead.thumbnail ? `<img src="${lead.thumbnail}" alt="" class="lead-image">` : ''}
-        <h1><a href="${lead.link}" target="_blank" style="color:inherit;text-decoration:none">${lead.title}</a></h1>
-        <p class="summary">${lead.description}</p>
-        <div class="meta">${lead.source} · ${new Date(lead.pubDate).toLocaleString()}</div>
+        ${leadImage}
+        <h1>${storyLink(lead, escapeHtml(lead.title))}</h1>
+        <p class="summary">${escapeHtml(lead.description)}</p>
+        <div class="meta">${escapeHtml(lead.source)} · ${escapeHtml(formatWhen(lead.pubDate, true))}</div>
       </div>
       <div class="secondary-stories">
-        ${secondary.map(s => `
+        ${secondary.map(story => `
           <div class="story-card">
-            <h3><a href="${s.link}" target="_blank">${s.title}</a></h3>
-            <div class="meta">${s.source} · ${new Date(s.pubDate).toLocaleDateString()}</div>
+            <h3>${storyLink(story, escapeHtml(story.title))}</h3>
+            <div class="meta">${escapeHtml(story.source)} · ${escapeHtml(formatWhen(story.pubDate, false))}</div>
           </div>
         `).join('')}
       </div>
     </div>
-    <h2 style="font-family: 'Libre Baskerville', serif; margin: 20px 0 10px; font-size: 1.4rem;">More International Stories</h2>
+    <h2 id="more" style="font-family: 'Libre Baskerville', serif; margin: 20px 0 10px; font-size: 1.4rem;">More International Stories</h2>
     <div class="grid-section">
-      ${grid.map(s => `
+      ${grid.map(story => `
         <div class="grid-card">
-          ${s.thumbnail ? `<img src="${s.thumbnail}" alt="">` : ''}
-          <h3><a href="${s.link}" target="_blank">${s.title}</a></h3>
-          <div class="meta">${s.source}</div>
+          ${story.thumbnail ? `<img src="${escapeHtml(story.thumbnail)}" alt="">` : ''}
+          <h3>${storyLink(story, escapeHtml(story.title))}</h3>
+          <div class="meta">${escapeHtml(story.source)}</div>
         </div>
       `).join('')}
     </div>
   `;
-
-  container.innerHTML = html;
 }
 
 document.addEventListener('DOMContentLoaded', loadNews);
